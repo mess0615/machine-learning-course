@@ -12,11 +12,10 @@ Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable
 
 ### Data Loading
 
-Here the testing and training CSV files are downloaded and loaded. Strings aren't converted to factors because all of the relevant data is numeric and read.csv was incorrectly treating some of those numeric variables as strings (which we correct in cleaning section below).
+Here the testing and training CSV files are downloaded and loaded. Strings aren't converted to factors because all of the relevant data is numeric and read.csv was incorrectly treating some of those numeric variables as strings (which is corrected in cleaning section below).
 ```{r, echo=TRUE, message=F, warning=F}
 library(caret)
 library(doParallel)
-set.seed(78701)
 ```
 
 ```{r}
@@ -56,7 +55,6 @@ cleanData <- function(df, stripCols) {
 cleanTraining <- cleanData(training, colsToStrip)
 cleanTesting <- cleanData(testing, colsToStrip)
 ```
-
 `r length(naCols)` of `r ncol(training)` variables have more than 50% NAs and were removed.
 
 To reduce model training time with minimal loss of accuracy, also remove variables that seem highly correlated (abs(cor) >= 0.75).
@@ -64,19 +62,27 @@ To reduce model training time with minimal loss of accuracy, also remove variabl
 correlationMatrix <- cor(subset(cleanTraining, select=-classe))
 correlatedCols <- findCorrelation(correlationMatrix, cutoff=0.75, names=TRUE)
 reducedTraining <- cleanTraining[, (!colnames(cleanTraining) %in% correlatedCols)]
-reducedTesting <- cleanTesting[, (!colnames(cleanTesting) %in% correlatedCols)]
+finalTesting <- cleanTesting[, (!colnames(cleanTesting) %in% correlatedCols)]
 ```
-
 `r length(correlatedCols)` of `r ncol(cleanTraining)` variables have abs(correlation) >= 0.75 and were removed.
+
+Create a validation set here from the training set for cross-validation (to estimate the out of sample error later).
+```{r, cache=TRUE}
+set.seed(78701)
+inTrain <- createDataPartition(reducedTraining$classe, p=0.8, list=FALSE)
+finalTraining <- reducedTraining[inTrain,]
+finalValidation <- reducedTraining[-inTrain,]
+```
 
 ### Model Selection
 The problem at hand involves predicting a categorical variable ("classe") with 5 levels ("A", "B", "C", "D", "E"). Decision trees are good methods for classification problems and Random Forests seem like a good start.
 
-As can be seen in the output below, 31 predictors were examined for 19622 samples. Cross-validated 10 fold resampling was used and the highest accuracy result was an astounding 99.4% with a mtry (number of randomly selected predictors) value of 2.  The number of trees was set to 500.  It appears that the out of sample error rate is estimated at 0.56%.  When looking at the confusion matrix, it appears that the "A" class has the lowest misclassification error while the "D" class has the highest.
+As can be seen in the output below, 31 predictors were examined for 14,718 samples. Cross-validated 10 fold resampling was used and the highest accuracy result was an astounding 99% with a mtry (number of randomly selected predictors) value of 2.  The number of trees was set to 500.  It appears that the out of sample error rate is estimated at 0.86% (this will be checked below with validation data).  When looking at the confusion matrix, it appears that the "A" class has the lowest misclassification error while the "D" class has the highest.
 ```{r, cache=TRUE, warning=F, message=F}
 cl <- makeCluster(detectCores())
 registerDoParallel(cl)
-model <- train(classe ~ ., data=reducedTraining, method="rf", trControl=trainControl(method="cv"), number=3)
+set.seed(85255)
+model <- train(classe ~ ., data=finalTraining, method="rf", trControl=trainControl(method="cv"), number=4)
 stopCluster(cl)
 ```
 ```{r, cache=TRUE}
@@ -84,15 +90,22 @@ model
 model$finalModel
 ```
 
-When plotting the model variable importance, it appears that yaw_belt is by far the most important predictor, followed by magnet_dumbbell_z, pitch_forearm, magnet_belt_y and roll_forearm.
+When plotting the model variable importance, it appears that yaw_belt is by far the most important predictor, followed by magnet_dumbbell_z, magnet_belt_y, pitch_forearm, roll_forearm and roll_dumbbell.
 ```{r, cache=TRUE}
 plot(varImp(model, scale = FALSE), main = "Model Variable Importance")
+```
+
+### Out of Sample Error Estimation with Cross-Validation
+Now use the model on the validation data set to estimate out of sample error.  It appears the accuracy is even better on the validation set at 99.39%.  That would make the error rate estimate to be 0.61%.  This is lower than the estimated error rate from the trained model output (above).  However, to be conservative, the low end of the 95% confidence interval for accuracy should be used (99.09%), which would give an estimated out of sample error rate of 0.91%, which is closer to the model estimate above.  The accuracy per "classe" seems similar to the training data, with "A" having the least error and "D" having the highest.
+```{r, cache=TRUE}
+validationPred <- predict(model, newdata=finalValidation)
+confusionMatrix(validationPred, finalValidation$classe)
 ```
 
 ### Testing Model on Test Data
 Below is the output of the predicted "classe" for each of the 20 test rows.
 ```{r, cache=TRUE}
-testPredictions <- predict(model, newdata=reducedTesting)
-testPredictions <- data.frame(problem_id=reducedTesting$problem_id, classe=testPredictions)
+testPredictions <- predict(model, newdata=finalTesting)
+testPredictions <- data.frame(problem_id=finalTesting$problem_id, classe=testPredictions)
 testPredictions
 ```
