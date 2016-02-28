@@ -1,0 +1,98 @@
+---
+title: "Predicting Correctness of Activity Using Accelerometer Data"
+output: html_document
+---
+
+### Overview
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal was to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+The data for the project was downloaded from http://groupware.les.inf.puc-rio.br/har.  The citation for the publication that included this dataset is below:
+
+Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements. Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6. 
+
+### Data Loading
+
+Here the testing and training CSV files are downloaded and loaded. Strings aren't converted to factors because all of the relevant data is numeric and read.csv was incorrectly treating some of those numeric variables as strings (which we correct in cleaning section below).
+```{r, echo=TRUE, message=F, warning=F}
+library(caret)
+library(doParallel)
+set.seed(78701)
+```
+
+```{r}
+localTrainingFile <- 'pml-training.csv'
+if(!file.exists(localTrainingFile)) {
+    download.file('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv',
+                  localTrainingFile, method='curl')
+}
+localTestingFile <- 'pml-testing.csv'
+if(!file.exists(localTestingFile)) {
+    download.file('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv',
+                  localTestingFile, method='curl')
+}
+```
+```{r, cache=TRUE}
+training <- read.csv(localTrainingFile, stringsAsFactors=FALSE, na.strings=c("NA", ""))
+testing <- read.csv(localTestingFile, stringsAsFactors=FALSE, na.strings=c("NA", ""))
+```
+
+### Data Exploration and Cleaning
+It appears that the dataset includes many variables that are mostly NA (which were removed if >= 50%). Also, it's assumed that some columns are not important for building a model (e.g. timestamp).  Most of the applicable variables are numeric and may have been loaded as strings and need to be converted. A function will be used to do this and applied to both training and testing sets to make sure it's consistent.
+```{r, cache=TRUE, warning=F}
+colsToStrip <- c('X', 'user_name', 'raw_timestamp_part_1', 'raw_timestamp_part_2', 'cvtd_timestamp',
+                 'new_window', 'num_window')
+numRows <- nrow(training)
+naCols <- names(training[, colSums(is.na(training)) >= numRows / 2])
+colsToStrip <- unique(c(colsToStrip, naCols))
+cleanData <- function(df, stripCols) {
+    classe <- df$classe
+    newDf <- df[, (!colnames(df) %in% stripCols)]
+    newDf <- as.data.frame(apply(newDf, 2, function(x) as.numeric(as.character(x))))
+    if(!is.null(classe)) {
+        newDf$classe <- classe
+    }
+    newDf
+}
+cleanTraining <- cleanData(training, colsToStrip)
+cleanTesting <- cleanData(testing, colsToStrip)
+```
+
+`r length(naCols)` of `r ncol(training)` variables have more than 50% NAs and were removed.
+
+To reduce model training time with minimal loss of accuracy, also remove variables that seem highly correlated (abs(cor) >= 0.75).
+```{r, cache=TRUE}
+correlationMatrix <- cor(subset(cleanTraining, select=-classe))
+correlatedCols <- findCorrelation(correlationMatrix, cutoff=0.75, names=TRUE)
+reducedTraining <- cleanTraining[, (!colnames(cleanTraining) %in% correlatedCols)]
+reducedTesting <- cleanTesting[, (!colnames(cleanTesting) %in% correlatedCols)]
+```
+
+`r length(correlatedCols)` of `r ncol(cleanTraining)` variables have abs(correlation) >= 0.75 and were removed.
+
+### Model Selection
+The problem at hand involves predicting a categorical variable ("classe") with 5 levels ("A", "B", "C", "D", "E"). Decision trees are good methods for classification problems and Random Forests seem like a good start.
+
+As can be seen in the output below, 31 predictors were examined for 19622 samples. Cross-validated 10 fold resampling was used and the highest accuracy result was an astounding 99.4% with a mtry (number of randomly selected predictors) value of 2.  The number of trees was set to 500.  It appears that the out of sample error rate is estimated at 0.56%.  When looking at the confusion matrix, it appears that the "A" class has the lowest misclassification error while the "D" class has the highest.
+```{r, cache=TRUE, warning=F, message=F}
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+model <- train(classe ~ ., data=reducedTraining, method="rf", trControl=trainControl(method="cv"), number=3)
+stopCluster(cl)
+```
+```{r, cache=TRUE}
+model
+model$finalModel
+```
+
+When plotting the model variable importance, it appears that yaw_belt is by far the most important predictor, followed by magnet_dumbbell_z, pitch_forearm, magnet_belt_y and roll_forearm.
+```{r, cache=TRUE}
+plot(varImp(model, scale = FALSE), main = "Model Variable Importance")
+```
+
+### Testing Model on Test Data
+Below is the output of the predicted "classe" for each of the 20 test rows.
+```{r, cache=TRUE}
+testPredictions <- predict(model, newdata=reducedTesting)
+testPredictions <- data.frame(problem_id=reducedTesting$problem_id, classe=testPredictions)
+testPredictions
+```
